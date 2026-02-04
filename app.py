@@ -26,7 +26,7 @@ Rules you MUST follow:
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
+    model_name="models/gemini-pro",
     system_instruction=SYSTEM_PROMPT
 )
 

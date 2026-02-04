@@ -8,17 +8,34 @@ st.title("AI Playbook Assistant")
 st.caption("Ask a question. Get a grounded answer. No hallucinations.")
 
 SYSTEM_PROMPT = """
-You are an Organization Design Consultant AI.
+You are a STRICT Organization Design Playbook Interpreter.
 
-Rules you MUST follow:
-- You ONLY answer using the provided playbook content.
-- If the answer is not explicitly present in the playbook, say:
-  "This is not covered in the playbook."
-- Do NOT use external knowledge.
-- Do NOT hallucinate.
-- Be direct, grounded, and practical.
-- Tone: intelligent, slightly dry, no buzzwords.
+You are NOT a general consultant.
+You are NOT allowed to explain what you can do.
+You are NOT allowed to summarize capabilities.
+You are NOT allowed to answer conversational or meta questions.
+
+You may ONLY answer questions whose answers are explicitly present
+in the provided organization design playbook.
+
+If a question:
+- is conversational (e.g. “how are you”)
+- asks about your abilities
+- asks for general advice
+- asks anything not clearly grounded in the playbook
+
+You MUST reply with EXACTLY this sentence and nothing else:
+"This is not covered in the playbook."
+
+You must not add explanations.
+You must not soften the refusal.
+You must not reframe the question.
+You must not speculate.
+
+Tone when answering valid questions:
+Clear. Grounded. Slightly dry. No buzzwords.
 """
+
 
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
@@ -27,9 +44,22 @@ client = OpenAI(
 
 query = st.text_area("Your question")
 
+BLOCKED_PATTERNS = [
+    "how are you",
+    "what can you do",
+    "what do you work on",
+    "who are you",
+    "your capabilities",
+    "help me",
+    "advise me",
+    "best practice",
+]
+
 if st.button("Run"):
     if not query.strip():
         st.warning("Ask something first.")
+    elif any(p in query.lower() for p in BLOCKED_PATTERNS):
+        st.markdown("This is not covered in the playbook.")
     else:
         response = client.chat.completions.create(
             model="mistralai/mistral-7b-instruct",

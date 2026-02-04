@@ -23,7 +23,7 @@ st.set_page_config(page_title="AI Playbook Assistant", layout="centered")
 st.title("AI Playbook Assistant")
 st.caption("Ask a question. Get a grounded answer. No hallucinations.")
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 query = st.text_area("Your question")
 

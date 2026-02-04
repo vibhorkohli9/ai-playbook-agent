@@ -1,8 +1,9 @@
 import streamlit as st
-from openai import OpenAI
+import google.generativeai as genai
 import os
 
-system_prompt = """
+# --- SYSTEM PROMPT ---
+SYSTEM_PROMPT = """
 You are an Organization Design Consultant AI.
 
 Rules you MUST follow:
@@ -18,26 +19,27 @@ Your job is to help users interpret, apply, and reason through
 organization design questions strictly based on the playbook.
 """
 
+# --- STREAMLIT UI ---
 st.set_page_config(page_title="AI Playbook Assistant", layout="centered")
 
 st.title("AI Playbook Assistant")
 st.caption("Ask a question. Get a grounded answer. No hallucinations.")
 
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+question = st.text_area("Your question")
 
-query = st.text_area("Your question")
+# --- GEMINI SETUP ---
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction=SYSTEM_PROMPT
+)
+
+# --- RUN BUTTON ---
 if st.button("Run"):
-    if not query.strip():
+    if not question.strip():
         st.warning("Ask something first.")
     else:
-        response = client.responses.create(
-            model="gpt-4o-mini",
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query}
-            ]
-        )
-
-        answer = response.output_text
-        st.markdown(answer)
+        with st.spinner("Thinking…"):
+            response = model.generate_content(question)
+            st.markdown(response.text)

@@ -15,13 +15,16 @@ if st.button("Run"):
     if not query.strip():
         st.warning("Ask something first.")
     else:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a professional, accurate AI assistant."},
-                {"role": "user", "content": query}
-            ],
-            temperature=0.3
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_input}
+            ]
         )
+        
+        answer = response.output_text
+        
+        
 
         st.markdown(response.choices[0].message.content)

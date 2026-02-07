@@ -180,6 +180,10 @@ Content:
 
     context_text = "\n\n".join(context_blocks)
 
+    if not relevant_chunks:
+        st.markdown("This is not covered in the playbook.")
+        st.stop()
+  
     # Step 4: Call model
     response = client.chat.completions.create(
         model="mistralai/mistral-7b-instruct",

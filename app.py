@@ -286,17 +286,14 @@ Content:
       temperature=0.2
   )
 
-    st.markdown("### ✅ Grounded Answer")
-    st.markdown(response.choices[0].message.content)
-
     # -------------------------------------------------
-    # Display Answer
+    # Display Grounded Answer
     # -------------------------------------------------
     st.markdown("### ✅ Grounded Answer")
     st.markdown(response.choices[0].message.content)
     
     # -------------------------------------------------
-    # Evidence Preview (ADD THIS BLOCK HERE)
+    # Evidence Preview (AFTER answer, BEFORE confidence)
     # -------------------------------------------------
     with st.expander("📚 Evidence used from the playbook"):
         for ch in relevant_chapters:
@@ -308,13 +305,8 @@ Content:
             st.markdown("---")
     
     # -------------------------------------------------
-    # Confidence Badge (KEEP THIS AFTER)
+    # Confidence Badge (LAST)
     # -------------------------------------------------
     st.markdown("---")
     st.markdown(confidence_badge)
 
-
-
-    st.markdown("---")
-    st.markdown(confidence_badge)
-  

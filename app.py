@@ -109,6 +109,32 @@ def filter_relevant_chapters(chapters, query):
     return relevant
 
 # -------------------------------------------------
+# Utility: Confidence badge (Phase-2A, rule-based)
+# -------------------------------------------------
+def calculate_confidence(relevant_chapters):
+    """
+    Confidence is derived ONLY from grounding strength.
+    No ML, no guessing.
+    """
+
+    if not relevant_chapters:
+        return "❌ Confidence: No evidence found in playbook"
+
+    total_pages = sum(
+        max(ch["pages"]) - min(ch["pages"]) + 1
+        for ch in relevant_chapters
+    )
+
+    chapter_count = len(relevant_chapters)
+
+    if chapter_count >= 3 and total_pages >= 6:
+        return "🟢🟢 Confidence: High (multiple chapters, broad coverage)"
+    elif chapter_count >= 1 and total_pages >= 3:
+        return "🟢 Confidence: Medium (limited but clear coverage)"
+    else:
+        return "🟡 Confidence: Low (narrow reference)"
+
+# -------------------------------------------------
 # OpenRouter / OpenAI-compatible client
 # -------------------------------------------------
 client = OpenAI(
@@ -171,6 +197,10 @@ if st.button("Run"):
     if not relevant_chapters:
         st.markdown("This is not covered in the playbook.")
         st.stop()  
+
+    # Step 2.5: Calculate confidence from grounding
+    confidence_badge = calculate_confidence(relevant_chapters)
+
   
     # Step 3: Build grounded context
     context_blocks = []
@@ -207,3 +237,6 @@ Content:
   )
 
     st.markdown(response.choices[0].message.content)
+
+    st.markdown("---")
+    st.markdown(confidence_badge)

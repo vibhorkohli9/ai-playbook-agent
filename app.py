@@ -162,10 +162,15 @@ if st.button("Run"):
     # Step 2: Filter relevant chapters
     relevant_chapters = filter_relevant_chapters(chapters, query)
 
+    # -------------------------------------------------
+    # HARD GROUNDING GATE
+    # If no chapter contains evidence for the query,
+    # the model must NEVER be called.
+    # -------------------------------------------------
     if not relevant_chapters:
         st.markdown("This is not covered in the playbook.")
-        st.stop()
-
+        st.stop()  
+  
     # Step 3: Build grounded context
     context_blocks = []
     for ch in relevant_chapters:

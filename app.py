@@ -2,7 +2,6 @@ import streamlit as st
 from openai import OpenAI
 import os
 import pdfplumber
-import time
 
 
 # =================================================
@@ -21,7 +20,7 @@ def document_suitability_check(uploaded_file, sample_pages=10):
 
 
 # =================================================
-# BLOCK-LEVEL TEXT EXTRACTION (2000+ pages safe)
+# BLOCK-LEVEL TEXT EXTRACTION
 # =================================================
 def extract_text_blocks(uploaded_file, block_size=800, progress_bar=None):
     uploaded_file.seek(0)
@@ -46,10 +45,8 @@ def extract_text_blocks(uploaded_file, block_size=800, progress_bar=None):
                 })
                 block_id += 1
 
-            # ---- Progress update
             if progress_bar:
-                progress = int((page_num / total_pages) * 100)
-                progress_bar.progress(progress)
+                progress_bar.progress(int((page_num / total_pages) * 100))
 
     return blocks
 
@@ -57,12 +54,10 @@ def extract_text_blocks(uploaded_file, block_size=800, progress_bar=None):
 # =================================================
 # CONFIDENCE BADGE
 # =================================================
-def calculate_confidence(relevant_blocks):
-    count = len(relevant_blocks)
-
-    if count >= 8:
+def calculate_confidence(block_count):
+    if block_count >= 8:
         return "🟢🟢 Confidence: High (multiple strong evidence blocks)"
-    elif count >= 3:
+    elif block_count >= 3:
         return "🟢 Confidence: Medium (clear but limited evidence)"
     else:
         return "🟡 Confidence: Low (narrow reference)"
@@ -72,17 +67,6 @@ def calculate_confidence(relevant_blocks):
 # STREAMLIT CONFIG
 # =================================================
 st.set_page_config(page_title="AI Document Assistant", layout="centered")
-
-st.markdown(
-    """
-    <style>
-    .stApp { background-color: #0E1117; color: #FAFAFA; }
-    textarea, input { background-color: #1E222A !important; color: #FAFAFA !important; }
-    button[kind="primary"] { background-color: #4F8BF9; color: white; border-radius: 8px; }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
 
 st.title("AI Document Assistant")
 st.caption("Ask a question. Get a grounded answer. No hallucinations.")
@@ -115,23 +99,13 @@ client = OpenAI(
 # SIDEBAR
 # =================================================
 with st.sidebar:
-    st.header("📄 Document Control")
-    uploaded_file = st.file_uploader("Upload any text-based PDF", type=["pdf"])
-
-    st.markdown("---")
-    st.caption("⚠️ Trust Guarantees")
-    st.caption("• Evidence-only answers")
-    st.caption("• No hallucinations")
-    st.caption("• Mandatory citations")
+    uploaded_file = st.file_uploader("Upload a text-based PDF", type=["pdf"])
 
 
 # =================================================
 # QUESTION
 # =================================================
-query = st.text_area(
-    "Ask a grounded question",
-    placeholder="e.g. What governance model is recommended?"
-)
+query = st.text_area("Ask a grounded question")
 
 
 # =================================================
@@ -139,28 +113,18 @@ query = st.text_area(
 # =================================================
 if st.button("Run"):
 
-    if not uploaded_file:
-        st.warning("Please upload a document.")
+    if not uploaded_file or not query.strip():
+        st.warning("Upload a document and ask a question.")
         st.stop()
 
     if not document_suitability_check(uploaded_file):
         st.error("⚠️ Scanned or image-based PDF detected.")
         st.stop()
 
-    if not query.strip():
-        st.warning("Please ask a question.")
-        st.stop()
-
-    # ---- Loading UI
     st.markdown("### ⏳ Processing document")
     progress_bar = st.progress(0)
-    status = st.empty()
-
-    status.markdown("📖 Reading pages…")
 
     blocks = extract_text_blocks(uploaded_file, progress_bar=progress_bar)
-
-    status.markdown("🔎 Finding evidence…")
 
     keywords = query.lower().split()
     relevant_blocks = [
@@ -172,23 +136,10 @@ if st.button("Run"):
         st.markdown("This is not covered in the document.")
         st.stop()
 
-    confidence_badge = calculate_confidence(relevant_blocks)
-
-    context_blocks = []
-    for b in relevant_blocks[:10]:
-        context_blocks.append(
-            f"""
-Block ID: {b['id']}
-Page: {b['page']}
-Content:
-{b['text']}
-"""
-        )
-
-    context_text = "\n\n".join(context_blocks)
-
-    status.markdown("🧠 Generating answer…")
-    progress_bar.progress(100)
+    context_text = "\n\n".join(
+        f"Block ID: {b['id']}\nPage: {b['page']}\nContent:\n{b['text']}"
+        for b in relevant_blocks[:10]
+    )
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -196,32 +147,35 @@ Content:
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": f"""
-Document excerpts:
-{context_text}
-
-Question:
-{query}
-"""
+                "content": f"Document excerpts:\n{context_text}\n\nQuestion:\n{query}"
             }
         ],
         temperature=0.2
     )
 
-    status.empty()
-    progress_bar.empty()
+    answer = response.choices[0].message.content.strip()
 
     # =================================================
-    # OUTPUT
+    # TRUST GATE (CRITICAL FIX)
     # =================================================
     st.markdown("### ✅ Grounded Answer")
-    st.markdown(response.choices[0].message.content)
+    st.markdown(answer)
 
+    if answer == "This is not covered in the document.":
+        # STOP — no evidence, no confidence
+        st.stop()
+
+    # =================================================
+    # Evidence Preview
+    # =================================================
     with st.expander("📚 Evidence used from the document"):
         for b in relevant_blocks[:10]:
-            st.markdown(f"**Block ID:** {b['id']}  \n**Page:** {b['page']}")
+            st.markdown(f"**Block ID:** {b['id']} | **Page:** {b['page']}")
             st.markdown(b["text"][:400] + "…")
             st.markdown("---")
 
+    # =================================================
+    # Confidence (ONLY FOR VALID ANSWERS)
+    # =================================================
     st.markdown("---")
-    st.markdown(confidence_badge)
+    st.markdown(calculate_confidence(len(relevant_blocks)))

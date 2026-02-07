@@ -161,6 +161,7 @@ if st.button("Run"):
 
     # Step 2: Filter relevant chapters
     relevant_chapters = filter_relevant_chapters(chapters, query)
+    relevant_chapters = relevant_chapters or []
 
     # -------------------------------------------------
     # HARD GROUNDING GATE
@@ -179,7 +180,7 @@ if st.button("Run"):
 Chapter: {ch['title']}
 Pages: {min(ch['pages'])}-{max(ch['pages'])}
 Content:
-{ch['text']}
+{ch['text'][:3000]}
 """
         )
 
@@ -188,21 +189,21 @@ Content:
   
     # Step 4: Call model
     response = client.chat.completions.create(
-        model="mistralai/mistral-7b-instruct",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": f"""
-Playbook excerpts:
-{context_text}
-
-Question:
-{query}
-"""
-            }
-        ],
-        temperature=0.2
-    )
+      model="gpt-4o-mini",
+      messages=[
+          {"role": "system", "content": SYSTEM_PROMPT},
+          {
+              "role": "user",
+              "content": f"""
+  Playbook excerpts:
+  {context_text}
+  
+  Question:
+  {query}
+  """
+          }
+      ],
+      temperature=0.2
+  )
 
     st.markdown(response.choices[0].message.content)

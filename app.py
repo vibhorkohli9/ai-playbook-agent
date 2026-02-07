@@ -2,6 +2,9 @@ import streamlit as st
 from openai import OpenAI
 import os
 import pdfplumber
+import re
+import time
+
 
 # =================================================
 # DOCUMENT SUITABILITY CHECK
@@ -71,6 +74,32 @@ def calculate_confidence(relevant_blocks):
 
 
 # =================================================
+# PROGRESS ANIMATION (UX POLISH)
+# =================================================
+def run_progress(progress_bar, status_text):
+    """
+    Smooth visual progress animation.
+    Improves perceived performance during long operations.
+    """
+
+    steps = [
+        ("🔍 Reading document structure", 15),
+        ("📄 Extracting text blocks", 40),
+        ("🧠 Matching evidence", 65),
+        ("✍️ Generating grounded answer", 85),
+        ("✅ Finalizing response", 100),
+    ]
+
+    current = 0
+    for message, target in steps:
+        status_text.markdown(f"**{message}**")
+        while current < target:
+            current += 1
+            progress_bar.progress(current)
+            time.sleep(0.015)
+
+
+# =================================================
 # STREAMLIT CONFIG + THEME
 # =================================================
 st.set_page_config(page_title="AI Document Assistant", layout="centered")
@@ -82,6 +111,11 @@ st.markdown(
     textarea, input { background-color: #1E222A !important; color: #FAFAFA !important; }
     button[kind="primary"] { background-color: #4F8BF9; color: white; border-radius: 8px; }
     section[data-testid="stSidebar"] { background-color: #111827; }
+
+    /* Progress bar gradient */
+    div[data-testid="stProgress"] > div > div {
+        background: linear-gradient(90deg, #4F8BF9, #8AB4FF);
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -156,6 +190,10 @@ st.markdown("🧠 Model access is locked until evidence is found.")
 # =================================================
 if st.button("Run"):
 
+    # --- Visual progress UI
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
     # --- Upload validation
     if not uploaded_file:
         st.warning("Please upload a document first.")
@@ -174,6 +212,9 @@ if st.button("Run"):
         st.warning("Please ask a question.")
         st.stop()
 
+    # --- Run animated progress
+    run_progress(progress_bar, status_text)
+
     # --- Extract blocks
     blocks = extract_text_blocks(uploaded_file)
 
@@ -186,13 +227,15 @@ if st.button("Run"):
 
     # --- HARD GROUNDING GATE
     if not relevant_blocks:
+        progress_bar.empty()
+        status_text.empty()
         st.markdown("This is not covered in the document.")
         st.stop()
 
     # --- Confidence
     confidence_badge = calculate_confidence(relevant_blocks)
 
-    # --- Build model context (capped)
+    # --- Build model context (token-safe)
     context_blocks = []
     for b in relevant_blocks[:10]:
         context_blocks.append(
@@ -224,6 +267,10 @@ Question:
         ],
         temperature=0.2
     )
+
+    # --- Clear progress UI
+    progress_bar.empty()
+    status_text.empty()
 
     # =================================================
     # OUTPUT

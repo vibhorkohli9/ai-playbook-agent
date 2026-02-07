@@ -8,6 +8,40 @@ import re
 # Streamlit UI config
 # -------------------------------------------------
 st.set_page_config(page_title="AI Playbook Assistant", layout="centered")
+# -------------------------------------------------
+# UI Theme Styling
+# -------------------------------------------------
+st.markdown(
+    """
+    <style>
+    /* Main background */
+    .stApp {
+        background-color: #0E1117;
+        color: #FAFAFA;
+    }
+
+    /* Text inputs & text areas */
+    textarea, input {
+        background-color: #1E222A !important;
+        color: #FAFAFA !important;
+    }
+
+    /* Buttons */
+    button[kind="primary"] {
+        background-color: #4F8BF9;
+        color: white;
+        border-radius: 8px;
+    }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #111827;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 
 st.title("AI Playbook Assistant")
 st.caption("Ask a question. Get a grounded answer. No hallucinations.")
@@ -145,14 +179,27 @@ client = OpenAI(
 # -------------------------------------------------
 # UI — File upload
 # -------------------------------------------------
-st.subheader("Upload Organization Design Playbook")
+with st.sidebar:
+    st.header("📘 Playbook Control")
 
-uploaded_file = st.file_uploader(
-    "Upload PDF playbook (organization design only)",
-    type=["pdf"]
+    uploaded_file = st.file_uploader(
+        "Upload Organization Design Playbook (PDF)",
+        type=["pdf"]
+    )
+
+    st.markdown("---")
+    st.caption("⚠️ Grounding Rules")
+    st.caption("• Answers only from the playbook")
+    st.caption("• No speculation")
+    st.caption("• Chapter + page citation mandatory")
+
+
+query = st.text_area(
+    "Ask a grounded question",
+    placeholder="e.g. How should decision rights be structured in a matrix organization?"
 )
+st.caption("Only questions answerable from the uploaded playbook will return results.")
 
-query = st.text_area("Your question")
 
 # Explicit conversational blockers
 BLOCKED_PATTERNS = [
@@ -164,6 +211,9 @@ BLOCKED_PATTERNS = [
     "advise me",
     "best practice",
 ]
+
+st.markdown("### 🔎 Grounding Status")
+st.markdown("🧠 Model access is locked until textual evidence is found.")
 
 # -------------------------------------------------
 # Main execution
@@ -236,7 +286,35 @@ Content:
       temperature=0.2
   )
 
+    st.markdown("### ✅ Grounded Answer")
     st.markdown(response.choices[0].message.content)
+
+    # -------------------------------------------------
+    # Display Answer
+    # -------------------------------------------------
+    st.markdown("### ✅ Grounded Answer")
+    st.markdown(response.choices[0].message.content)
+    
+    # -------------------------------------------------
+    # Evidence Preview (ADD THIS BLOCK HERE)
+    # -------------------------------------------------
+    with st.expander("📚 Evidence used from the playbook"):
+        for ch in relevant_chapters:
+            st.markdown(
+                f"**Chapter:** {ch['title']}  \n"
+                f"**Pages:** {min(ch['pages'])}-{max(ch['pages'])}"
+            )
+            st.markdown(ch["text"][:500] + "...")
+            st.markdown("---")
+    
+    # -------------------------------------------------
+    # Confidence Badge (KEEP THIS AFTER)
+    # -------------------------------------------------
+    st.markdown("---")
+    st.markdown(confidence_badge)
+
+
 
     st.markdown("---")
     st.markdown(confidence_badge)
+  

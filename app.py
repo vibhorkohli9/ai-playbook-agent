@@ -5,26 +5,24 @@ import pdfplumber
 
 
 # =================================================
-# DOCUMENT SUITABILITY CHECK
+# PDF TEXT CHECK
 # =================================================
 def document_suitability_check(uploaded_file, sample_pages=10):
     uploaded_file.seek(0)
 
     with pdfplumber.open(uploaded_file) as pdf:
-        text_pages = 0
-        for page in pdf.pages[:sample_pages]:
-            if page.extract_text():
-                text_pages += 1
+        text_pages = sum(
+            1 for p in pdf.pages[:sample_pages] if p.extract_text()
+        )
 
     return text_pages >= max(1, sample_pages // 3)
 
 
 # =================================================
-# BLOCK-LEVEL TEXT EXTRACTION
+# BLOCK EXTRACTION (LARGE PDFs SAFE)
 # =================================================
 def extract_text_blocks(uploaded_file, block_size=800, progress_bar=None):
     uploaded_file.seek(0)
-
     blocks = []
     block_id = 1
 
@@ -52,24 +50,43 @@ def extract_text_blocks(uploaded_file, block_size=800, progress_bar=None):
 
 
 # =================================================
+# SOFT RELEVANCE SCORING (CRITICAL FIX)
+# =================================================
+def score_blocks(blocks, query):
+    keywords = set(query.lower().split())
+
+    scored = []
+    for b in blocks:
+        text = b["text"].lower()
+        score = sum(1 for k in keywords if k in text)
+        scored.append((score, b))
+
+    # Highest score first
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Return blocks only
+    return [b for _, b in scored]
+
+
+# =================================================
 # CONFIDENCE BADGE
 # =================================================
 def calculate_confidence(block_count):
     if block_count >= 8:
-        return "🟢🟢 Confidence: High (multiple strong evidence blocks)"
+        return "🟢🟢 Confidence: High"
     elif block_count >= 3:
-        return "🟢 Confidence: Medium (clear but limited evidence)"
+        return "🟢 Confidence: Medium"
     else:
-        return "🟡 Confidence: Low (narrow reference)"
+        return "🟡 Confidence: Low"
 
 
 # =================================================
-# STREAMLIT CONFIG
+# STREAMLIT SETUP
 # =================================================
 st.set_page_config(page_title="AI Document Assistant", layout="centered")
 
 st.title("AI Document Assistant")
-st.caption("Ask a question. Get a grounded answer. No hallucinations.")
+st.caption("Ask a question. Get an answer strictly from the document.")
 
 
 # =================================================
@@ -79,9 +96,9 @@ SYSTEM_PROMPT = """
 You are a STRICT Document Evidence Interpreter.
 
 Rules:
-- Answer ONLY from provided text
+- Answer ONLY using the provided document excerpts
 - Every answer MUST include citations
-- If not found, reply exactly:
+- If the answer is not explicitly present, reply EXACTLY:
 "This is not covered in the document."
 """
 
@@ -103,9 +120,9 @@ with st.sidebar:
 
 
 # =================================================
-# QUESTION
+# USER QUESTION
 # =================================================
-query = st.text_area("Ask a grounded question")
+query = st.text_area("Ask a question from the document")
 
 
 # =================================================
@@ -114,31 +131,27 @@ query = st.text_area("Ask a grounded question")
 if st.button("Run"):
 
     if not uploaded_file or not query.strip():
-        st.warning("Upload a document and ask a question.")
+        st.warning("Upload a document and enter a question.")
         st.stop()
 
     if not document_suitability_check(uploaded_file):
-        st.error("⚠️ Scanned or image-based PDF detected.")
+        st.error("⚠️ This PDF appears to be scanned or image-based.")
         st.stop()
 
     st.markdown("### ⏳ Processing document")
-    progress_bar = st.progress(0)
+    progress = st.progress(0)
 
-    blocks = extract_text_blocks(uploaded_file, progress_bar=progress_bar)
+    blocks = extract_text_blocks(uploaded_file, progress_bar=progress)
 
-    keywords = query.lower().split()
-    relevant_blocks = [
-        b for b in blocks
-        if any(k in b["text"].lower() for k in keywords)
-    ]
+    # 🔥 KEY CHANGE: NO HARD FILTER
+    ranked_blocks = score_blocks(blocks, query)
 
-    if not relevant_blocks:
-        st.markdown("This is not covered in the document.")
-        st.stop()
+    # Always pass top blocks to model
+    context_blocks = ranked_blocks[:12]
 
     context_text = "\n\n".join(
         f"Block ID: {b['id']}\nPage: {b['page']}\nContent:\n{b['text']}"
-        for b in relevant_blocks[:10]
+        for b in context_blocks
     )
 
     response = client.chat.completions.create(
@@ -147,7 +160,13 @@ if st.button("Run"):
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": f"Document excerpts:\n{context_text}\n\nQuestion:\n{query}"
+                "content": f"""
+Document excerpts:
+{context_text}
+
+Question:
+{query}
+"""
             }
         ],
         temperature=0.2
@@ -156,26 +175,19 @@ if st.button("Run"):
     answer = response.choices[0].message.content.strip()
 
     # =================================================
-    # TRUST GATE (CRITICAL FIX)
+    # OUTPUT (TRUST SAFE)
     # =================================================
-    st.markdown("### ✅ Grounded Answer")
+    st.markdown("### ✅ Answer")
     st.markdown(answer)
 
     if answer == "This is not covered in the document.":
-        # STOP — no evidence, no confidence
         st.stop()
 
-    # =================================================
-    # Evidence Preview
-    # =================================================
-    with st.expander("📚 Evidence used from the document"):
-        for b in relevant_blocks[:10]:
+    with st.expander("📚 Evidence from document"):
+        for b in context_blocks:
             st.markdown(f"**Block ID:** {b['id']} | **Page:** {b['page']}")
             st.markdown(b["text"][:400] + "…")
             st.markdown("---")
 
-    # =================================================
-    # Confidence (ONLY FOR VALID ANSWERS)
-    # =================================================
     st.markdown("---")
-    st.markdown(calculate_confidence(len(relevant_blocks)))
+    st.markdown(calculate_confidence(len(context_blocks)))

@@ -2,7 +2,6 @@ import streamlit as st
 from openai import OpenAI
 import os
 import pdfplumber
-import re
 import time
 
 
@@ -10,10 +9,7 @@ import time
 # DOCUMENT SUITABILITY CHECK
 # =================================================
 def document_suitability_check(uploaded_file, sample_pages=10):
-    """
-    Detects scanned / image-only PDFs.
-    Returns False if insufficient extractable text is found.
-    """
+    uploaded_file.seek(0)
 
     with pdfplumber.open(uploaded_file) as pdf:
         text_pages = 0
@@ -21,23 +17,21 @@ def document_suitability_check(uploaded_file, sample_pages=10):
             if page.extract_text():
                 text_pages += 1
 
-    # Require text on at least 30% of sampled pages
     return text_pages >= max(1, sample_pages // 3)
 
 
 # =================================================
 # BLOCK-LEVEL TEXT EXTRACTION (2000+ pages safe)
 # =================================================
-def extract_text_blocks(uploaded_file, block_size=800):
-    """
-    Breaks document into small, page-scoped text blocks.
-    Designed for very large documents.
-    """
+def extract_text_blocks(uploaded_file, block_size=800, progress_bar=None):
+    uploaded_file.seek(0)
 
     blocks = []
     block_id = 1
 
     with pdfplumber.open(uploaded_file) as pdf:
+        total_pages = len(pdf.pages)
+
         for page_num, page in enumerate(pdf.pages, start=1):
             text = page.extract_text()
             if not text:
@@ -52,55 +46,30 @@ def extract_text_blocks(uploaded_file, block_size=800):
                 })
                 block_id += 1
 
+            # ---- Progress update
+            if progress_bar:
+                progress = int((page_num / total_pages) * 100)
+                progress_bar.progress(progress)
+
     return blocks
 
 
 # =================================================
-# CONFIDENCE BADGE (GROUNDING-ONLY)
+# CONFIDENCE BADGE
 # =================================================
 def calculate_confidence(relevant_blocks):
-    """
-    Confidence derived purely from evidence density.
-    """
+    count = len(relevant_blocks)
 
-    block_count = len(relevant_blocks)
-
-    if block_count >= 8:
+    if count >= 8:
         return "🟢🟢 Confidence: High (multiple strong evidence blocks)"
-    elif block_count >= 3:
+    elif count >= 3:
         return "🟢 Confidence: Medium (clear but limited evidence)"
     else:
         return "🟡 Confidence: Low (narrow reference)"
 
 
 # =================================================
-# PROGRESS ANIMATION (UX POLISH)
-# =================================================
-def run_progress(progress_bar, status_text):
-    """
-    Smooth visual progress animation.
-    Improves perceived performance during long operations.
-    """
-
-    steps = [
-        ("🔍 Reading document structure", 15),
-        ("📄 Extracting text blocks", 40),
-        ("🧠 Matching evidence", 65),
-        ("✍️ Generating grounded answer", 85),
-        ("✅ Finalizing response", 100),
-    ]
-
-    current = 0
-    for message, target in steps:
-        status_text.markdown(f"**{message}**")
-        while current < target:
-            current += 1
-            progress_bar.progress(current)
-            time.sleep(0.015)
-
-
-# =================================================
-# STREAMLIT CONFIG + THEME
+# STREAMLIT CONFIG
 # =================================================
 st.set_page_config(page_title="AI Document Assistant", layout="centered")
 
@@ -110,12 +79,6 @@ st.markdown(
     .stApp { background-color: #0E1117; color: #FAFAFA; }
     textarea, input { background-color: #1E222A !important; color: #FAFAFA !important; }
     button[kind="primary"] { background-color: #4F8BF9; color: white; border-radius: 8px; }
-    section[data-testid="stSidebar"] { background-color: #111827; }
-
-    /* Progress bar gradient */
-    div[data-testid="stProgress"] > div > div {
-        background: linear-gradient(90deg, #4F8BF9, #8AB4FF);
-    }
     </style>
     """,
     unsafe_allow_html=True
@@ -126,27 +89,16 @@ st.caption("Ask a question. Get a grounded answer. No hallucinations.")
 
 
 # =================================================
-# SYSTEM PROMPT (DOMAIN-AGNOSTIC)
+# SYSTEM PROMPT
 # =================================================
 SYSTEM_PROMPT = """
 You are a STRICT Document Evidence Interpreter.
 
-Rules you MUST follow:
-- You may ONLY answer using the provided document excerpts.
-- Every valid answer MUST include a source citation.
-- Citation format MUST be:
-  Block ID: <block id>
-  Page: <page number>
-
-If the answer is not explicitly present in the provided text,
-reply with EXACTLY this sentence and nothing else:
+Rules:
+- Answer ONLY from provided text
+- Every answer MUST include citations
+- If not found, reply exactly:
 "This is not covered in the document."
-
-You must not:
-- Explain your capabilities
-- Add external knowledge
-- Speculate
-- Soften refusals
 """
 
 
@@ -160,7 +112,7 @@ client = OpenAI(
 
 
 # =================================================
-# SIDEBAR – DOCUMENT CONTROL
+# SIDEBAR
 # =================================================
 with st.sidebar:
     st.header("📄 Document Control")
@@ -168,74 +120,60 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption("⚠️ Trust Guarantees")
-    st.caption("• Answers strictly from document")
+    st.caption("• Evidence-only answers")
     st.caption("• No hallucinations")
     st.caption("• Mandatory citations")
 
 
 # =================================================
-# USER QUESTION
+# QUESTION
 # =================================================
 query = st.text_area(
     "Ask a grounded question",
     placeholder="e.g. What governance model is recommended?"
 )
 
-st.markdown("### 🔎 Grounding Status")
-st.markdown("🧠 Model access is locked until evidence is found.")
-
 
 # =================================================
-# EXECUTION
+# RUN
 # =================================================
 if st.button("Run"):
 
-    # --- Visual progress UI
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    # --- Upload validation
     if not uploaded_file:
-        st.warning("Please upload a document first.")
+        st.warning("Please upload a document.")
         st.stop()
 
-    # --- Suitability check
     if not document_suitability_check(uploaded_file):
-        st.error(
-            "⚠️ This PDF appears to be scanned or image-based.\n\n"
-            "Please upload a text-based PDF for reliable answers."
-        )
+        st.error("⚠️ Scanned or image-based PDF detected.")
         st.stop()
 
-    # --- Question validation
     if not query.strip():
         st.warning("Please ask a question.")
         st.stop()
 
-    # --- Run animated progress
-    run_progress(progress_bar, status_text)
+    # ---- Loading UI
+    st.markdown("### ⏳ Processing document")
+    progress_bar = st.progress(0)
+    status = st.empty()
 
-    # --- Extract blocks
-    blocks = extract_text_blocks(uploaded_file)
+    status.markdown("📖 Reading pages…")
 
-    # --- Keyword-based grounding filter
+    blocks = extract_text_blocks(uploaded_file, progress_bar=progress_bar)
+
+    status.markdown("🔎 Finding evidence…")
+
     keywords = query.lower().split()
     relevant_blocks = [
         b for b in blocks
         if any(k in b["text"].lower() for k in keywords)
     ]
 
-    # --- HARD GROUNDING GATE
     if not relevant_blocks:
-        progress_bar.empty()
-        status_text.empty()
         st.markdown("This is not covered in the document.")
         st.stop()
 
-    # --- Confidence
     confidence_badge = calculate_confidence(relevant_blocks)
 
-    # --- Build model context (token-safe)
     context_blocks = []
     for b in relevant_blocks[:10]:
         context_blocks.append(
@@ -249,7 +187,9 @@ Content:
 
     context_text = "\n\n".join(context_blocks)
 
-    # --- Model call
+    status.markdown("🧠 Generating answer…")
+    progress_bar.progress(100)
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -268,9 +208,8 @@ Question:
         temperature=0.2
     )
 
-    # --- Clear progress UI
+    status.empty()
     progress_bar.empty()
-    status_text.empty()
 
     # =================================================
     # OUTPUT
@@ -278,13 +217,11 @@ Question:
     st.markdown("### ✅ Grounded Answer")
     st.markdown(response.choices[0].message.content)
 
-    # --- Evidence Preview
     with st.expander("📚 Evidence used from the document"):
         for b in relevant_blocks[:10]:
             st.markdown(f"**Block ID:** {b['id']}  \n**Page:** {b['page']}")
             st.markdown(b["text"][:400] + "…")
             st.markdown("---")
 
-    # --- Confidence (last)
     st.markdown("---")
     st.markdown(confidence_badge)

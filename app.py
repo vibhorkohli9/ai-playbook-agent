@@ -129,8 +129,8 @@ def retrieve_chunks(query, store, k=TOP_K):
 st.set_page_config("Document Assistant (RAG)", "📄")
 inject_custom_css()
 
-st.title("📄 Document Assistant (RAG)")
-st.caption("Semantic search across your entire document")
+st.title("📄 Document Assistant")
+st.caption("Search across your entire document")
 
 uploaded_file = st.sidebar.file_uploader("Upload PDF", type=["pdf"])
 

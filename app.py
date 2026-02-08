@@ -6,49 +6,15 @@ import time
 import numpy as np
 
 # =================================================
-# CONFIGURATION
+# CONFIG
 # =================================================
 MAX_FILE_SIZE_MB = 200
 CHUNK_SIZE_WORDS = 600
 TOP_K = 8
 STREAMLIT_TIMEOUT_SECONDS = 85
-PROCESSING_SPEED_PAGES_PER_SECOND = 5
+SAFE_WARNING_SECONDS = 60
 EMBEDDING_MODEL = "text-embedding-3-small"
 CHAT_MODEL = "gpt-4o-mini"
-
-# =================================================
-# UI CSS (FIXED VISIBILITY)
-# =================================================
-def inject_custom_css():
-    st.markdown("""
-    <style>
-    .time-estimate, .warning-box {
-        color: #1F2937 !important;
-        font-weight: 600;
-    }
-
-    .time-estimate {
-        background: #FFF7CC;
-        border-left: 6px solid #F59E0B;
-        padding: 1rem;
-        border-radius: 8px;
-    }
-
-    .warning-box {
-        background: #FEE2E2;
-        border-left: 6px solid #DC2626;
-        padding: 1.5rem;
-        border-radius: 8px;
-    }
-
-    .answer-box {
-        background: white;
-        border-left: 4px solid #DC2626;
-        padding: 1.5rem;
-        border-radius: 8px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
 
 # =================================================
 # OPENAI CLIENT
@@ -59,41 +25,59 @@ client = OpenAI(
 )
 
 # =================================================
-# PDF TEXT CHECK (FIXED)
+# PDF TEXT CHECK (ROBUST)
 # =================================================
 def check_pdf_format(uploaded_file):
     uploaded_file.seek(0)
     try:
         with pdfplumber.open(uploaded_file) as pdf:
-            extracted = 0
+            total = 0
             for page in pdf.pages[:5]:
                 text = page.extract_text(layout=True)
                 if text:
-                    extracted += len(text.strip())
-            return extracted > 100
+                    total += len(text.strip())
+            return total > 100
     except:
         return False
 
 # =================================================
 # PDF → CHUNKS
 # =================================================
-def extract_chunks(uploaded_file):
+def extract_chunks(uploaded_file, progress_placeholder, timer_placeholder):
     uploaded_file.seek(0)
     chunks = []
+    start_time = time.time()
 
     with pdfplumber.open(uploaded_file) as pdf:
-        for page_no, page in enumerate(pdf.pages, start=1):
+        total_pages = len(pdf.pages)
+
+        for idx, page in enumerate(pdf.pages, start=1):
             text = page.extract_text(layout=True)
             if not text:
                 continue
 
             words = text.split()
             for i in range(0, len(words), CHUNK_SIZE_WORDS):
-                chunk = " ".join(words[i:i+CHUNK_SIZE_WORDS])
                 chunks.append({
-                    "page": page_no,
-                    "text": chunk
+                    "page": idx,
+                    "text": " ".join(words[i:i + CHUNK_SIZE_WORDS])
                 })
+
+            elapsed = int(time.time() - start_time)
+
+            progress_placeholder.progress(idx / total_pages)
+            timer_placeholder.info(f"⏱️ Indexing time elapsed: **{elapsed} seconds**")
+
+            if elapsed > SAFE_WARNING_SECONDS:
+                st.warning(
+                    "⚠️ This document is taking longer than expected.\n\n"
+                    "**Streamlit guidance:**\n"
+                    "- Best results under **350–400 pages**\n"
+                    "- Or split the PDF into smaller parts\n"
+                    "- Or ask questions by page range\n\n"
+                    "We’ll continue, but timeouts may occur."
+                )
+
     return chunks
 
 # =================================================
@@ -110,12 +94,12 @@ def cosine_sim(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 # =================================================
-# RAG RETRIEVAL
+# RETRIEVAL
 # =================================================
 def retrieve_chunks(query, store, k=TOP_K):
     query_emb = embed_texts([query])[0]
-
     scored = []
+
     for item in store:
         score = cosine_sim(query_emb, item["embedding"])
         scored.append((score, item))
@@ -126,31 +110,40 @@ def retrieve_chunks(query, store, k=TOP_K):
 # =================================================
 # STREAMLIT APP
 # =================================================
-st.set_page_config("Document Assistant (RAG)", "📄")
-inject_custom_css()
+st.set_page_config("Document Assistant", "📄", layout="centered")
 
 st.title("📄 Document Assistant")
-st.caption("Search across your entire document")
+st.caption("Readable • Reliable • Streamlit-safe RAG")
 
 uploaded_file = st.sidebar.file_uploader("Upload PDF", type=["pdf"])
 
 # =================================================
-# INGEST DOCUMENT ONCE
+# INGEST DOCUMENT (ONCE)
 # =================================================
 if uploaded_file and "vector_store" not in st.session_state:
 
     size_mb = uploaded_file.size / (1024 * 1024)
     if size_mb > MAX_FILE_SIZE_MB:
-        st.error("File too large")
+        st.error("❌ File too large for processing")
         st.stop()
 
     if not check_pdf_format(uploaded_file):
-        st.warning("⚠️ Limited extractable text detected")
-        st.info("💡 Document may contain tables or complex layouts. Processing anyway.")
+        st.warning("⚠️ Limited extractable text detected (tables or layouts)")
+        st.info("We’ll still attempt indexing.")
 
-    with st.spinner("📄 Reading and indexing document..."):
+    st.subheader("📄 Reading and indexing document")
+
+    progress_placeholder = st.empty()
+    timer_placeholder = st.empty()
+
+    with st.spinner("Indexing document…"):
         start = time.time()
-        chunks = extract_chunks(uploaded_file)
+
+        chunks = extract_chunks(
+            uploaded_file,
+            progress_placeholder,
+            timer_placeholder
+        )
 
         embeddings = embed_texts([c["text"] for c in chunks])
 
@@ -163,7 +156,8 @@ if uploaded_file and "vector_store" not in st.session_state:
             for c, e in zip(chunks, embeddings)
         ]
 
-    st.success(f"Indexed {len(chunks)} chunks in {time.time() - start:.1f}s")
+    elapsed = int(time.time() - start)
+    st.success(f"✅ Indexed {len(chunks)} chunks in {elapsed} seconds")
 
 # =================================================
 # QUERY
@@ -172,7 +166,7 @@ query = st.text_area("Ask a question about the document")
 
 if st.button("🔍 Search") and query and "vector_store" in st.session_state:
 
-    with st.spinner("🔎 Retrieving relevant sections..."):
+    with st.spinner("🔎 Retrieving relevant sections…"):
         matches = retrieve_chunks(query, st.session_state.vector_store)
 
     context = "\n\n".join(
@@ -180,25 +174,21 @@ if st.button("🔍 Search") and query and "vector_store" in st.session_state:
         for m in matches
     )
 
-    with st.spinner("✍️ Generating answer..."):
+    with st.spinner("✍️ Generating answer…"):
         response = client.chat.completions.create(
             model=CHAT_MODEL,
             messages=[
                 {
                     "role": "system",
-                    "content": """You are a document assistant.
-Answer ONLY from provided content.
-Always cite page numbers.
-If not found, say so."""
+                    "content": (
+                        "Answer only from the provided document context. "
+                        "Always cite page numbers. "
+                        "If not found, say so."
+                    )
                 },
                 {
                     "role": "user",
-                    "content": f"""
-Document context:
-{context}
-
-Question: {query}
-"""
+                    "content": f"{context}\n\nQuestion: {query}"
                 }
             ],
             temperature=0.2
@@ -206,10 +196,11 @@ Question: {query}
 
     answer = response.choices[0].message.content
 
-    st.markdown("### 📝 Answer")
-    st.markdown(f"<div class='answer-box'>{answer}</div>", unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown("### 📝 Answer")
+        st.markdown(answer)
 
-    with st.expander("📄 Source Sections"):
+    with st.expander("📄 Source sections"):
         for m in matches:
             st.markdown(f"**Page {m['page']}**")
-            st.text(m["text"][:400] + "...")
+            st.text(m["text"][:400] + "…")

@@ -113,7 +113,7 @@ def retrieve_chunks(query, store, k=TOP_K):
 st.set_page_config("Document Assistant", "📄", layout="centered")
 
 st.title("📄 Document Assistant")
-st.caption("Readable • Reliable • Streamlit-safe RAG")
+st.caption("Readable • Reliable • Streamlit-safe")
 
 uploaded_file = st.sidebar.file_uploader("Upload PDF", type=["pdf"])
 

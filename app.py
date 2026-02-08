@@ -9,7 +9,9 @@ import time
 # =================================================
 MAX_FILE_SIZE_MB = 200
 CHUNK_SIZE_WORDS = 800
-MAX_CONTEXT_BLOCKS = 15  # Use more blocks for better accuracy
+MAX_CONTEXT_BLOCKS = 15
+STREAMLIT_TIMEOUT_SECONDS = 85  # Safe limit (Streamlit Cloud = 90s)
+PROCESSING_SPEED_PAGES_PER_SECOND = 5  # Conservative estimate
 
 
 # =================================================
@@ -23,11 +25,9 @@ def inject_custom_css():
         --primary-red: #DC2626;
         --light-red: #FEE2E2;
         --dark-red: #991B1B;
-        --white: #FFFFFF;
-        --light-gray: #F3F4F6;
     }
     
-    /* Header styling */
+    /* Header */
     .main-header {
         background: linear-gradient(135deg, #DC2626 0%, #991B1B 100%);
         padding: 2rem;
@@ -49,7 +49,7 @@ def inject_custom_css():
         font-size: 1.1rem;
     }
     
-    /* Progress bar container */
+    /* Progress container */
     .progress-container {
         background: white;
         border: 2px solid #DC2626;
@@ -57,6 +57,24 @@ def inject_custom_css():
         padding: 1.5rem;
         margin: 1rem 0;
         box-shadow: 0 2px 8px rgba(220, 38, 38, 0.1);
+    }
+    
+    /* Time estimate box */
+    .time-estimate {
+        background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%);
+        border-left: 4px solid #F59E0B;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
+    
+    /* Warning box */
+    .warning-box {
+        background: linear-gradient(135deg, #FEE2E2 0%, #FECACA 100%);
+        border-left: 4px solid #DC2626;
+        padding: 1.5rem;
+        border-radius: 8px;
+        margin: 1rem 0;
     }
     
     /* Confidence badge */
@@ -69,20 +87,9 @@ def inject_custom_css():
         margin: 0.5rem 0;
     }
     
-    .confidence-high {
-        background: #10B981;
-        color: white;
-    }
-    
-    .confidence-medium {
-        background: #F59E0B;
-        color: white;
-    }
-    
-    .confidence-low {
-        background: #EF4444;
-        color: white;
-    }
+    .confidence-high { background: #10B981; color: white; }
+    .confidence-medium { background: #F59E0B; color: white; }
+    .confidence-low { background: #EF4444; color: white; }
     
     /* Answer box */
     .answer-box {
@@ -94,7 +101,7 @@ def inject_custom_css():
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
     }
     
-    /* Source section */
+    /* Source item */
     .source-item {
         background: #F9FAFB;
         border-left: 3px solid #DC2626;
@@ -120,22 +127,6 @@ def inject_custom_css():
         box-shadow: 0 4px 8px rgba(220, 38, 38, 0.3);
     }
     
-    /* File uploader */
-    .uploadedFile {
-        border: 2px dashed #DC2626 !important;
-        border-radius: 8px;
-    }
-    
-    /* Sidebar */
-    .css-1d391kg {
-        background-color: #F9FAFB;
-    }
-    
-    /* Info boxes */
-    .stAlert {
-        border-radius: 8px;
-    }
-    
     /* Text input */
     .stTextArea>div>div>textarea {
         border: 2px solid #E5E7EB;
@@ -149,6 +140,50 @@ def inject_custom_css():
     }
     </style>
     """, unsafe_allow_html=True)
+
+
+# =================================================
+# ESTIMATE PROCESSING TIME
+# =================================================
+def estimate_processing_time(uploaded_file):
+    """
+    Calculate estimated time BEFORE processing
+    Returns: (estimated_seconds, total_pages, should_proceed)
+    """
+    uploaded_file.seek(0)
+    
+    try:
+        with pdfplumber.open(uploaded_file) as pdf:
+            total_pages = len(pdf.pages)
+        
+        # Calculate estimated time
+        # Formula: pages / processing_speed + overhead
+        estimated_time = (total_pages / PROCESSING_SPEED_PAGES_PER_SECOND) + 5  # +5s overhead
+        
+        # Check if within timeout limit
+        should_proceed = estimated_time <= STREAMLIT_TIMEOUT_SECONDS
+        
+        return estimated_time, total_pages, should_proceed
+        
+    except Exception as e:
+        return None, None, False
+
+
+# =================================================
+# ESTIMATE BY LINES (ALTERNATIVE)
+# =================================================
+def estimate_by_file_size(file_size_mb):
+    """
+    Quick estimation based on file size
+    Average: 1 MB ≈ 10 pages ≈ 2800 lines
+    """
+    estimated_pages = int(file_size_mb * 10)
+    estimated_lines = int(file_size_mb * 2800)
+    estimated_time = (estimated_pages / PROCESSING_SPEED_PAGES_PER_SECOND) + 5
+    
+    should_proceed = estimated_time <= STREAMLIT_TIMEOUT_SECONDS
+    
+    return estimated_time, estimated_pages, estimated_lines, should_proceed
 
 
 # =================================================
@@ -186,7 +221,7 @@ def show_animated_progress(current, total, status_text):
 
 
 # =================================================
-# CONFIDENCE SCORE CALCULATOR
+# CONFIDENCE CALCULATOR
 # =================================================
 def calculate_confidence(blocks, query):
     """Calculate user-friendly confidence score"""
@@ -194,15 +229,11 @@ def calculate_confidence(blocks, query):
         return 0, "Low"
     
     keywords = set(query.lower().split())
+    total_matches = sum(
+        sum(block["text"].lower().count(k) for k in keywords)
+        for block in blocks
+    )
     
-    # Count total keyword occurrences across all blocks
-    total_matches = 0
-    for block in blocks:
-        text_lower = block["text"].lower()
-        total_matches += sum(text_lower.count(k) for k in keywords)
-    
-    # Calculate confidence percentage
-    # More matches = higher confidence
     if total_matches >= 20:
         confidence = min(95, 70 + (total_matches - 20))
         level = "High"
@@ -224,7 +255,6 @@ def check_pdf_format(uploaded_file):
     uploaded_file.seek(0)
     try:
         with pdfplumber.open(uploaded_file) as pdf:
-            # Check first 3 pages
             for page in pdf.pages[:3]:
                 text = page.extract_text(layout=False)
                 if text and len(text.strip()) > 50:
@@ -235,12 +265,14 @@ def check_pdf_format(uploaded_file):
 
 
 # =================================================
-# FULL DOCUMENT SEARCH (NO EARLY EXIT)
+# OPTIMIZED FULL DOCUMENT SEARCH
 # =================================================
-def search_entire_document(uploaded_file, query, progress_placeholder):
+def search_entire_document_optimized(uploaded_file, query, progress_placeholder):
     """
-    CRITICAL: Search the ENTIRE document, no shortcuts
-    This ensures we don't miss answers on page 218 or anywhere else
+    Optimized full document search with:
+    - Batch processing
+    - Faster extraction
+    - Page-level keyword filtering
     """
     uploaded_file.seek(0)
     keywords = set(query.lower().split())
@@ -251,43 +283,51 @@ def search_entire_document(uploaded_file, query, progress_placeholder):
     try:
         with pdfplumber.open(uploaded_file) as pdf:
             total_pages = len(pdf.pages)
+            batch_size = 25
             
-            for page_num, page in enumerate(pdf.pages, start=1):
-                # Extract text
-                text = page.extract_text(layout=False)
-                if not text:
-                    continue
+            for batch_start in range(0, total_pages, batch_size):
+                batch_end = min(batch_start + batch_size, total_pages)
+                batch_pages = pdf.pages[batch_start:batch_end]
                 
-                # Split into chunks
-                words = text.split()
-                for i in range(0, len(words), CHUNK_SIZE_WORDS):
-                    chunk_text = " ".join(words[i:i + CHUNK_SIZE_WORDS])
-                    text_lower = chunk_text.lower()
+                for page_num, page in enumerate(batch_pages, start=batch_start + 1):
+                    # Fast extraction
+                    text = page.extract_text(layout=False, x_tolerance=3, y_tolerance=3)
+                    if not text or len(text) < 50:
+                        continue
                     
-                    # Score this chunk
-                    score = sum(text_lower.count(k) for k in keywords)
+                    text_lower = text.lower()
                     
-                    # Keep ALL blocks with any matches
-                    if score > 0:
-                        all_blocks.append({
-                            "id": f"B{block_id}",
-                            "page": page_num,
-                            "text": chunk_text,
-                            "score": score
-                        })
+                    # Skip pages without keywords
+                    has_keywords = any(k in text_lower for k in keywords)
+                    if not has_keywords:
+                        continue
                     
-                    block_id += 1
+                    # Chunk only relevant pages
+                    words = text.split()
+                    for i in range(0, len(words), CHUNK_SIZE_WORDS):
+                        chunk_text = " ".join(words[i:i + CHUNK_SIZE_WORDS])
+                        chunk_lower = chunk_text.lower()
+                        
+                        score = sum(chunk_lower.count(k) for k in keywords)
+                        
+                        if score > 0:
+                            all_blocks.append({
+                                "id": f"B{block_id}",
+                                "page": page_num,
+                                "text": chunk_text,
+                                "score": score
+                            })
+                        
+                        block_id += 1
                 
-                # Update progress every 20 pages
-                if page_num % 20 == 0 or page_num == total_pages:
-                    progress_html = show_animated_progress(
-                        page_num, 
-                        total_pages, 
-                        "Scanning document..."
-                    )
-                    progress_placeholder.markdown(progress_html, unsafe_allow_html=True)
+                # Update progress
+                progress_html = show_animated_progress(
+                    batch_end, 
+                    total_pages, 
+                    "Scanning document..."
+                )
+                progress_placeholder.markdown(progress_html, unsafe_allow_html=True)
         
-        # Sort by score and return top results
         all_blocks.sort(key=lambda x: x["score"], reverse=True)
         return all_blocks[:MAX_CONTEXT_BLOCKS], total_pages
         
@@ -304,7 +344,6 @@ st.set_page_config(
     layout="centered"
 )
 
-# Inject custom styling
 inject_custom_css()
 
 # Header
@@ -346,17 +385,35 @@ with st.sidebar:
         st.success(f"✅ {uploaded_file.name}")
         st.caption(f"📊 {file_size_mb:.1f} MB")
         
-        if file_size_mb > 100:
-            st.warning("⏱️ Large file - Processing will take 1-2 minutes")
-        elif file_size_mb > 50:
-            st.info("⏱️ Processing time: ~30-60 seconds")
+        # Quick estimate by file size
+        est_time, est_pages, est_lines, can_process = estimate_by_file_size(file_size_mb)
+        
+        # Show estimate
+        if can_process:
+            st.markdown(f"""
+            <div class="time-estimate">
+                <strong>⏱️ Estimated Processing Time</strong><br>
+                📄 ~{est_pages} pages (~{est_lines:,} lines)<br>
+                ⏰ ~{int(est_time)} seconds
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div class="warning-box">
+                <strong>⚠️ Document Too Large</strong><br>
+                📄 Estimated: ~{est_pages} pages<br>
+                ⏰ Would take: ~{int(est_time)} seconds<br>
+                🚫 Limit: {STREAMLIT_TIMEOUT_SECONDS} seconds<br><br>
+                <strong>Please use a smaller PDF (under ~400 pages)</strong>
+            </div>
+            """, unsafe_allow_html=True)
     
     st.markdown("---")
     st.markdown("### 💡 How to Use")
     st.markdown("""
     **1.** Upload your PDF document
     
-    **2.** Ask any question
+    **2.** Ask any question related to the document only
     
     **3.** Get accurate answers with page numbers
     
@@ -407,7 +464,7 @@ if query != st.session_state.get('query', ''):
 
 
 # =================================================
-# SEARCH BUTTON
+# SEARCH BUTTON WITH PRE-CHECK
 # =================================================
 if st.button("🔍 Search Document", type="primary", use_container_width=True):
 
@@ -426,8 +483,44 @@ if st.button("🔍 Search Document", type="primary", use_container_width=True):
         st.error(f"❌ File too large. Maximum: {MAX_FILE_SIZE_MB} MB")
         st.stop()
 
+    # ============================================
+    # CRITICAL: CHECK TIME BEFORE PROCESSING
+    # ============================================
+    with st.spinner("Analyzing document size..."):
+        estimated_time, total_pages, should_proceed = estimate_processing_time(uploaded_file)
+    
+    if not should_proceed:
+        st.markdown(f"""
+        <div class="warning-box">
+            <h3 style="margin-top: 0; color: #DC2626;">⚠️ Document Too Large to Process</h3>
+            <p><strong>Your document:</strong></p>
+            <ul>
+                <li>📄 Pages: {total_pages}</li>
+                <li>⏰ Estimated time: ~{int(estimated_time)} seconds</li>
+                <li>🚫 Processing limit: {STREAMLIT_TIMEOUT_SECONDS} seconds</li>
+            </ul>
+            <p><strong>Solution:</strong></p>
+            <ul>
+                <li>✅ Use a PDF with fewer than 400 pages</li>
+                <li>✅ Split your PDF into smaller parts</li>
+                <li>✅ Ask about specific page ranges (e.g., "What does page 50-100 say?")</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        st.stop()
+    
+    # Show time estimate
+    st.markdown(f"""
+    <div class="time-estimate">
+        <strong>⏱️ Processing Information</strong><br>
+        📄 Total pages: {total_pages}<br>
+        ⏰ Estimated time: ~{int(estimated_time)} seconds<br>
+        ✅ Within processing limit
+    </div>
+    """, unsafe_allow_html=True)
+
     # Format check
-    with st.spinner("Checking document..."):
+    with st.spinner("Checking document format..."):
         if not check_pdf_format(uploaded_file):
             st.error("⚠️ This PDF appears to be scanned images, not text")
             st.info("💡 Please use a text-based PDF or convert with OCR software")
@@ -435,11 +528,10 @@ if st.button("🔍 Search Document", type="primary", use_container_width=True):
 
     # Full document search
     progress_placeholder = st.empty()
-    
     start_time = time.time()
     
     try:
-        context_blocks, total_pages = search_entire_document(
+        context_blocks, total_pages = search_entire_document_optimized(
             uploaded_file, 
             query, 
             progress_placeholder
@@ -461,10 +553,10 @@ if st.button("🔍 Search Document", type="primary", use_container_width=True):
     # Calculate confidence
     confidence_score, confidence_level = calculate_confidence(context_blocks, query)
     
-    # Show search completion
+    # Show completion
     st.success(f"✅ Searched entire document ({total_pages} pages) in {elapsed:.1f}s")
 
-    # Build context for AI
+    # Build context
     context_text = "\n\n".join(
         f"[Page {b['page']}]\n{b['text']}"
         for b in context_blocks
@@ -510,7 +602,7 @@ Provide a clear answer with page citations.
             st.stop()
 
     # =================================================
-    # DISPLAY ANSWER WITH CONFIDENCE
+    # DISPLAY ANSWER
     # =================================================
     
     st.markdown("---")
@@ -537,9 +629,8 @@ Provide a clear answer with page citations.
     st.markdown("### 📝 Answer")
     st.markdown(f'<div class="answer-box">{answer}</div>', unsafe_allow_html=True)
 
-    # Warning if low confidence
     if confidence_level == "Low":
-        st.info("💡 Low confidence - The answer may not be fully accurate. Try rephrasing your question.")
+        st.info("💡 Low confidence - Try rephrasing your question.")
     
     # Show sources
     st.markdown("---")
@@ -564,36 +655,14 @@ Provide a clear answer with page citations.
 
     # Footer
     st.markdown("---")
-    st.caption(f"⚡ Processed in {elapsed:.1f}s • 🔒 Your document is not stored • 📄 Searched {total_pages} pages")
+    st.caption(f"⚡ Processed in {elapsed:.1f}s • 🔒 Document not stored • 📄 Searched {total_pages} pages")
 
 
 # =================================================
-# EMPTY STATE
+# EMPTY STATE (NO "Example Questions" SECTION)
 # =================================================
 if not uploaded_file:
     st.info("👈 Upload a PDF from the sidebar to get started")
-    
-    st.markdown("### 📚 Example Questions")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("""
-        **Quick Questions:**
-        - What is this about?
-        - Summarize page 10
-        - Key findings?
-        - Main conclusions?
-        """)
-    
-    with col2:
-        st.markdown("""
-        **Specific Questions:**
-        - What does page 218 say about [topic]?
-        - Find information about [specific term]
-        - What are the recommendations?
-        - What data is presented?
-        """)
     
     st.markdown("---")
     st.markdown("### ⚡ How It Works")
@@ -602,10 +671,12 @@ if not uploaded_file:
     2. **We scan** every single page - nothing is skipped
     3. **Get answers** with confidence scores and page numbers
     
-    **Supported:**
-    - Small PDFs (1-50 pages): ~5 seconds
+    **Processing Speed:**
+    - Small PDFs (1-50 pages): ~5-10 seconds
     - Medium PDFs (50-200 pages): ~15-30 seconds
-    - Large PDFs (200-1000+ pages): ~1-2 minutes
+    - Large PDFs (200-400 pages): ~40-80 seconds
+    
+    **Maximum:** ~400 pages due to 90-second processing limit
     
     **We search your entire document** - If the answer is on page 218, we'll find it!
     """)

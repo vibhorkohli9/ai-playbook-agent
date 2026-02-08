@@ -19,7 +19,7 @@ def document_suitability_check(uploaded_file, sample_pages=10):
 # =================================================
 # STREAMING BLOCK EXTRACTION (MEMORY SAFE)
 # =================================================
-def extract_text_blocks_streaming(uploaded_file, block_size=800):
+def extract_text_blocks_streaming(uploaded_file, block_size=1000):
     """
     Generator that yields blocks on-demand instead of loading all into memory.
     This prevents memory crashes with large PDFs.
@@ -44,31 +44,28 @@ def extract_text_blocks_streaming(uploaded_file, block_size=800):
                 }
                 block_id += 1
             
-            # Yield progress info every 50 pages
-            if page_num % 50 == 0:
+            # Yield progress info every 100 pages
+            if page_num % 100 == 0:
                 yield {"type": "progress", "current": page_num, "total": total_pages}
 
 
 # =================================================
 # TWO-PASS SMART FILTERING (PERFORMANCE FIX)
 # =================================================
-def smart_filter_blocks(uploaded_file, query, max_blocks=12):
+def smart_filter_blocks(uploaded_file, query, progress_placeholder):
     """
     PASS 1: Quick keyword filter (eliminates 90%+ of irrelevant blocks)
     PASS 2: Detailed scoring only on candidates
-    
-    This prevents scoring all 50,000+ blocks in a large PDF.
     """
     keywords = set(query.lower().split())
     
-    # PASS 1: Fast filter - only keep blocks with ANY keyword match
+    # PASS 1: Fast filter
     candidate_blocks = []
-    progress_placeholder = st.empty()
     
     for item in extract_text_blocks_streaming(uploaded_file):
         # Handle progress updates
         if item.get("type") == "progress":
-            progress_placeholder.text(f"📄 Processing pages {item['current']}/{item['total']}...")
+            progress_placeholder.text(f"Reading pages {item['current']}/{item['total']}...")
             continue
         
         text_lower = item["text"].lower()
@@ -79,67 +76,48 @@ def smart_filter_blocks(uploaded_file, query, max_blocks=12):
     
     progress_placeholder.empty()
     
-    # If no matches found at all
+    # If no matches found
     if not candidate_blocks:
         return []
     
-    # PASS 2: Detailed scoring ONLY on candidates (much smaller set)
+    # PASS 2: Score candidates
     scored = []
     for block in candidate_blocks:
         text_lower = block["text"].lower()
-        # Count total keyword frequency (better than just presence)
         score = sum(text_lower.count(k) for k in keywords)
         scored.append((score, block))
     
-    # Sort by score (highest first) and return top N
+    # Sort by score and return top 10
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [b for _, b in scored[:max_blocks]]
-
-
-# =================================================
-# CONFIDENCE CALCULATION
-# =================================================
-def calculate_confidence(block_count, total_keywords_found):
-    """Calculate answer confidence based on evidence strength"""
-    if block_count >= 8 and total_keywords_found > 15:
-        return "🟢🟢 High Confidence", "Strong evidence found across multiple sections"
-    elif block_count >= 3 and total_keywords_found > 5:
-        return "🟢 Medium Confidence", "Relevant sections found"
-    else:
-        return "🟡 Low Confidence", "Limited evidence available"
+    return [b for _, b in scored[:10]]
 
 
 # =================================================
 # STREAMLIT SETUP
 # =================================================
 st.set_page_config(
-    page_title="AI Document Assistant",
+    page_title="Document Q&A Assistant",
     page_icon="📄",
     layout="centered"
 )
 
-st.title("📄 AI Document Assistant")
-st.caption("Optimized for large documents (500-1000+ pages). Ask questions, get cited answers.")
+st.title("📄 Document Q&A Assistant")
+st.caption("Upload any PDF and ask questions. Get answers instantly with sources.")
 
 
 # =================================================
-# ENHANCED SYSTEM PROMPT
+# SYSTEM PROMPT
 # =================================================
-SYSTEM_PROMPT = """You are a STRICT Document Evidence Interpreter.
+SYSTEM_PROMPT = """You are a helpful document assistant.
 
-CRITICAL RULES:
-1. Answer ONLY using the provided document excerpts below
-2. ALWAYS cite Block IDs in your answer (e.g., "According to Block B42 on page 15...")
-3. If information appears contradictory across blocks, explicitly mention this
-4. If the answer is not explicitly present in the excerpts, respond EXACTLY with:
-   "This is not covered in the document."
-5. Be concise but complete - include all relevant details from the blocks
-6. Never add information from your training data - stick strictly to the document
+RULES:
+1. Answer ONLY using the document sections provided below
+2. Always mention which page or section you found the information
+3. If the answer is not in the document, say: "I couldn't find this information in the document."
+4. Keep answers clear and simple
+5. Use exact quotes when possible
 
-FORMAT:
-- Start with a direct answer
-- Support with specific Block ID citations
-- Keep response focused and clear
+Be helpful and conversational while staying accurate to the document.
 """
 
 
@@ -152,66 +130,93 @@ try:
         base_url=os.getenv("OPENAI_BASE_URL")
     )
 except Exception as e:
-    st.error(f"⚠️ OpenAI client initialization failed: {str(e)}")
+    st.error(f"⚠️ Configuration error. Please contact support.")
     st.stop()
 
 
 # =================================================
-# SIDEBAR CONFIGURATION
+# SIDEBAR
 # =================================================
 with st.sidebar:
-    st.markdown("### ⚙️ Configuration")
+    st.markdown("### 📂 Upload Document")
     
     uploaded_file = st.file_uploader(
-        "Upload PDF Document",
+        "Choose a PDF file",
         type=["pdf"],
         help="Upload a text-based PDF (not scanned images)"
     )
     
-    max_blocks = st.slider(
-        "Maximum context blocks",
-        min_value=6,
-        max_value=20,
-        value=12,
-        help="More blocks = more context but slower processing"
-    )
+    if uploaded_file:
+        # Show file info
+        file_size_mb = uploaded_file.size / (1024 * 1024)
+        st.success(f"✅ Uploaded: {uploaded_file.name}")
+        st.caption(f"Size: {file_size_mb:.1f} MB")
+        
+        # File size warning
+        if file_size_mb > 50:
+            st.warning("⚠️ Large file detected. Processing may take 30-60 seconds.")
     
     st.markdown("---")
-    st.markdown("### 📖 How it works")
+    st.markdown("### 💡 How to use")
     st.markdown("""
-    1. **Upload** a PDF (any size)
-    2. **Ask** a specific question
-    3. **Get** answers with block citations
+    **1. Upload** your PDF document
     
-    ⚡ **Optimized for:**
-    - Documents up to 1000+ pages
-    - Fast keyword-based search
-    - Memory-efficient processing
-    """)
+    **2. Ask** a question like:
+    - "What is this document about?"
+    - "Summarize page 5"
+    - "Find information about [topic]"
+    - "What are the main points?"
     
-    st.markdown("---")
-    st.markdown("### 💡 Tips")
-    st.markdown("""
-    - Use specific keywords
-    - Ask focused questions
-    - Check cited blocks for context
+    **3. Get** instant answers with page references
     """)
+
+
+# =================================================
+# SUGGESTION PROMPTS (AFTER UPLOAD)
+# =================================================
+if uploaded_file and 'query' not in st.session_state:
+    st.markdown("### 💬 Try asking:")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📋 What is this document about?"):
+            st.session_state.query = "What is this document about?"
+            st.rerun()
+        
+        if st.button("🔍 Summarize the main points"):
+            st.session_state.query = "Summarize the main points"
+            st.rerun()
+    
+    with col2:
+        if st.button("📊 What are the key findings?"):
+            st.session_state.query = "What are the key findings?"
+            st.rerun()
+        
+        if st.button("❓ What does page 1 say?"):
+            st.session_state.query = "What does page 1 say?"
+            st.rerun()
 
 
 # =================================================
 # MAIN INPUT AREA
 # =================================================
 query = st.text_area(
-    "Ask a question about the document",
+    "Ask a question about your document",
+    value=st.session_state.get('query', ''),
     height=100,
-    placeholder="Example: What are the key findings about climate change impacts?"
+    placeholder="Example: What are the conclusions on page 10?"
 )
+
+# Clear session state if query changes
+if query != st.session_state.get('query', ''):
+    st.session_state.query = query
 
 
 # =================================================
 # MAIN PROCESSING BUTTON
 # =================================================
-if st.button("🔍 Search & Answer", type="primary"):
+if st.button("🔍 Get Answer", type="primary"):
 
     # Validation
     if not uploaded_file:
@@ -219,39 +224,41 @@ if st.button("🔍 Search & Answer", type="primary"):
         st.stop()
     
     if not query.strip():
-        st.warning("⚠️ Please enter a question.")
+        st.warning("⚠️ Please type a question.")
         st.stop()
 
     # Step 1: Check document format
-    with st.spinner("Checking document format..."):
+    with st.spinner("Checking your document..."):
         if not document_suitability_check(uploaded_file):
-            st.error("⚠️ This PDF appears to be scanned or image-based.")
-            st.info("💡 This tool works with text-based PDFs. Please use OCR software to convert scanned PDFs first.")
+            st.error("⚠️ This PDF appears to be a scanned image.")
+            st.info("💡 This tool works with text-based PDFs. Please try a different document.")
             st.stop()
 
-    # Step 2: Search for relevant blocks
-    st.markdown("### ⏳ Searching document...")
+    # Step 2: Search for relevant sections
+    progress_placeholder = st.empty()
+    progress_placeholder.text("🔎 Searching through your document...")
     
     try:
-        context_blocks = smart_filter_blocks(uploaded_file, query, max_blocks)
+        context_blocks = smart_filter_blocks(uploaded_file, query, progress_placeholder)
     except Exception as e:
-        st.error(f"❌ Error processing PDF: {str(e)}")
+        st.error(f"❌ Error reading PDF: {str(e)}")
+        st.info("💡 Try a smaller PDF or contact support if this continues.")
         st.stop()
 
     # Step 3: Handle no results
     if not context_blocks:
-        st.warning("❌ No relevant sections found for your query.")
-        st.info("💡 **Try:**\n- Using different keywords\n- Rephrasing your question\n- Being more specific")
+        st.warning("❌ I couldn't find relevant information for your question.")
+        st.info("💡 **Try:**\n- Using different words\n- Making your question more specific\n- Checking if that topic is in the document")
         st.stop()
 
-    # Step 4: Build context for LLM
+    # Step 4: Build context for AI
     context_text = "\n\n".join(
-        f"Block ID: {b['id']}\nPage: {b['page']}\nContent:\n{b['text']}"
+        f"[Page {b['page']}]\n{b['text']}"
         for b in context_blocks
     )
 
-    # Step 5: Generate answer with LLM
-    with st.spinner("Generating answer from document..."):
+    # Step 5: Generate answer
+    with st.spinner("Writing your answer..."):
         try:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -259,15 +266,17 @@ if st.button("🔍 Search & Answer", type="primary"):
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {
                         "role": "user",
-                        "content": f"""Document excerpts:
+                        "content": f"""Here are relevant sections from the document:
 
 {context_text}
 
-Question: {query}
+User's question: {query}
+
+Please answer the question using only the information above. Mention page numbers when possible.
 """
                     }
                 ],
-                temperature=0.2,
+                temperature=0.3,
                 max_tokens=1000
             )
             
@@ -285,51 +294,32 @@ Question: {query}
     st.markdown("### ✅ Answer")
     st.markdown(answer)
 
-    # Handle "not covered" response
-    if "not covered in the document" in answer.lower():
-        st.info("💡 **Suggestions:**\n- Try different keywords\n- Rephrase your question\n- Check if the topic exists in the document")
+    # Handle "not found" response
+    if "couldn't find" in answer.lower():
+        st.info("💡 The information you're looking for might not be in this document. Try rephrasing your question.")
         st.stop()
 
-    # Calculate and display confidence
+    # Show where answer came from
     st.markdown("---")
-    total_keyword_matches = sum(
-        sum(b["text"].lower().count(k) for k in query.lower().split())
-        for b in context_blocks
-    )
-    
-    confidence_level, confidence_desc = calculate_confidence(
-        len(context_blocks),
-        total_keyword_matches
-    )
-    
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.metric("Confidence", confidence_level)
-    with col2:
-        st.info(f"**{confidence_desc}**\n\nBased on {len(context_blocks)} relevant blocks with {total_keyword_matches} keyword matches")
-
-    # Evidence viewer
-    st.markdown("---")
-    with st.expander("📚 View Evidence Blocks from Document", expanded=False):
-        st.caption("These are the sections used to generate the answer above")
+    with st.expander(f"📄 Source: Found in {len(context_blocks)} sections", expanded=False):
+        st.caption("These are the parts of your document that were used to answer your question")
         
         for idx, b in enumerate(context_blocks, 1):
-            st.markdown(f"**Block {b['id']}** | Page {b['page']} | Section {idx}/{len(context_blocks)}")
+            st.markdown(f"**Section {idx}** | Page {b['page']}")
             
-            # Show preview with expand option
-            preview_text = b["text"][:500]
-            if len(b["text"]) > 500:
+            # Show preview
+            preview_text = b["text"][:300]
+            if len(b["text"]) > 300:
                 st.text(preview_text + "...")
-                if st.button(f"Show full text", key=f"expand_{b['id']}"):
-                    st.text(b["text"])
             else:
                 st.text(preview_text)
             
-            st.markdown("---")
+            if idx < len(context_blocks):
+                st.markdown("---")
 
-    # Footer stats
+    # Footer
     st.markdown("---")
-    st.caption(f"✅ Analyzed {len(context_blocks)} most relevant sections | 🔍 Keywords: {', '.join(query.lower().split()[:5])}")
+    st.caption("✅ Answer generated from your document | 🔒 Your document is not stored")
 
 
 # =================================================
@@ -338,11 +328,34 @@ Question: {query}
 if not uploaded_file:
     st.info("👈 Upload a PDF from the sidebar to get started")
     
-    with st.expander("📋 Example Questions"):
+    st.markdown("### 📚 Example Questions You Can Ask:")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
         st.markdown("""
-        - What are the main conclusions?
-        - What methodology was used?
-        - What are the key findings about [topic]?
-        - What recommendations are provided?
-        - What are the limitations mentioned?
+        **Simple Questions:**
+        - What is this about?
+        - Summarize page 3
+        - What are the key points?
+        - Who is mentioned in this document?
         """)
+    
+    with col2:
+        st.markdown("""
+        **Detailed Questions:**
+        - What are the main conclusions?
+        - Find information about [topic]
+        - What recommendations are given?
+        - What data is shown in the charts?
+        """)
+    
+    st.markdown("---")
+    st.markdown("### 📋 Works best with:")
+    st.markdown("""
+    - Reports and research papers
+    - Contracts and legal documents
+    - Manuals and guides
+    - Books and articles
+    - Any text-based PDF up to **100 MB**
+    """)
